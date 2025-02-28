@@ -5,6 +5,9 @@ BOARD ?= PYBV10
 # If the build directory is not given, make it reflect the board name.
 BUILD ?= build-$(BOARD)
 
+SKIP_USBINIT ?= 0
+MICROPY_HW_SDCARD_MOUNT_AT_BOOT ?= 0
+
 BOARD_DIR ?= boards/$(BOARD)
 ifeq ($(wildcard $(BOARD_DIR)/.),)
 $(error Invalid BOARD specified: $(BOARD_DIR))
@@ -87,13 +90,17 @@ CFLAGS_MCU_l4 = $(CFLAGS_CORTEX_M) -mtune=cortex-m4 -mcpu=cortex-m4
 CFLAGS_MCU_h7 = $(CFLAGS_CORTEX_M) -mtune=cortex-m7 -mcpu=cortex-m7
 CFLAGS_MCU_wb = $(CFLAGS_CORTEX_M) -mtune=cortex-m4 -mcpu=cortex-m4
 
-CFLAGS = $(INC) -Wall -Wpointer-arith -Werror -std=gnu99 -nostdlib $(CFLAGS_MOD) $(CFLAGS_EXTRA)
+CFLAGS = $(INC) -Wpointer-arith -Werror -std=gnu99 -nostdlib $(CFLAGS_MOD) $(CFLAGS_EXTRA)
 CFLAGS += -D$(CMSIS_MCU)
 CFLAGS += $(CFLAGS_MCU_$(MCU_SERIES))
 CFLAGS += $(COPT)
 CFLAGS += -I$(BOARD_DIR)
 CFLAGS += -DSTM32_HAL_H='<stm32$(MCU_SERIES)xx_hal.h>'
 CFLAGS += -DMICROPY_HW_VTOR=$(TEXT0_ADDR)
+ifeq ($(SKIP_USBINIT),1)
+CFLAGS += -DSKIP_USBINIT=$(SKIP_USBINIT)
+endif
+CFLAGS += -DMICROPY_HW_SDCARD_MOUNT_AT_BOOT=$(MICROPY_HW_SDCARD_MOUNT_AT_BOOT)
 
 # Configure for nan-boxing object model if requested
 ifeq ($(NANBOX),1)
@@ -311,7 +318,7 @@ SRC_C = \
 	servo.c \
 	dac.c \
 	adc.c \
-	$(wildcard $(BOARD_DIR)/*.c)
+	$(sort $(wildcard $(BOARD_DIR)/*.c))
 
 SRC_O = \
 	$(STARTUP_FILE) \
@@ -388,6 +395,10 @@ else
 ifeq ($(MCU_SERIES),$(filter $(MCU_SERIES),f0 f4 f7 h7 l4))
     SRC_HAL += $(addprefix $(HAL_DIR)/Src/stm32$(MCU_SERIES)xx_, hal_can.c)
 endif
+endif
+
+ifeq ($(MCU_SERIES),$(filter $(MCU_SERIES),f0 f4 f7 l0 l4 wb))
+		SRC_HAL += $(addprefix $(HAL_DIR)/Src/stm32$(MCU_SERIES)xx_, hal_smartcard.c)
 endif
 
 SRC_USBDEV = $(addprefix $(USBDEV_DIR)/,\

@@ -185,7 +185,7 @@ STATIC int vfs_mount_and_chdir(mp_obj_t bdev, mp_obj_t mount_point) {
 MP_NOINLINE STATIC bool init_flash_fs(uint reset_mode) {
     if (reset_mode == 3) {
         // Asked by user to reset filesystem
-        factory_reset_create_filesystem();
+        factory_reset_create_filesystem(1, MICROPY_HW_FLASH_FS_LABEL);
     }
 
     // Default block device to entire flash storage
@@ -235,7 +235,7 @@ MP_NOINLINE STATIC bool init_flash_fs(uint reset_mode) {
     if (ret == -MP_ENODEV && bdev == MP_OBJ_FROM_PTR(&pyb_flash_obj) && reset_mode != 3) {
         // No filesystem, bdev is still the default (so didn't detect a possibly corrupt littlefs),
         // and didn't already create a filesystem, so try to create a fresh one now.
-        ret = factory_reset_create_filesystem();
+        ret = factory_reset_create_filesystem(1, MICROPY_HW_FLASH_FS_LABEL);
         if (ret == 0) {
             ret = vfs_mount_and_chdir(bdev, mount_point);
         }
@@ -248,7 +248,60 @@ MP_NOINLINE STATIC bool init_flash_fs(uint reset_mode) {
 
     return true;
 }
-#endif
+
+#if defined(MICROPY_HW_BDEV2_IOCTL)
+STATIC bool init_flash_fs_part(uint reset_mode, uint part_num, const char* label,
+                               const char* mount_point) {
+    if (sizeof(label[0]) != sizeof(TCHAR)) { // Sanity check
+        return false;
+    }
+
+    // create vfs object
+    fs_user_mount_t *vfs_fat = m_new_obj_maybe(fs_user_mount_t);
+    mp_vfs_mount_t *vfs = m_new_obj_maybe(mp_vfs_mount_t);
+
+    if (vfs == NULL || vfs_fat == NULL) {
+        return false;
+    }
+    vfs_fat->blockdev.flags = 0; // flash partitions are unmountable
+    pyb_flash_init_vfs(vfs_fat, part_num);
+
+    // try to mount the partition
+    FRESULT res = f_mount(&vfs_fat->fatfs);
+    if (reset_mode == 3 || res == FR_NO_FILESYSTEM) {
+        // no filesystem, or asked to reset it, so create a fresh one
+        if(factory_reset_create_filesystem(part_num, (const TCHAR*)label) != 0) {
+            printf("MPY: can't create flash filesystem\n");
+            return false;
+        }
+        res = f_mount(&vfs_fat->fatfs); // try again
+    }
+
+    if (res != FR_OK) {
+        // couldn't mount
+        m_del_obj(fs_user_mount_t, vfs_fat);
+        m_del_obj(mp_vfs_mount_t, vfs);
+        printf("MPY: can't mount flash\n");
+        return false;
+    }
+
+    // mounted via FatFs, now mount the flash partition in the VFS
+    vfs->str = mount_point;
+    vfs->len = strlen(mount_point);
+    vfs->obj = MP_OBJ_FROM_PTR(vfs_fat);
+    vfs->next = NULL;
+    for (mp_vfs_mount_t **m = &MP_STATE_VM(vfs_mount_table);; m = &(*m)->next) {
+        if (*m == NULL) {
+            *m = vfs;
+            break;
+        }
+    }
+    mp_obj_t mount_str = mp_obj_new_str_via_qstr(mount_point, strlen(mount_point));
+    mp_vfs_chdir(mount_str);
+    return true;
+}
+#endif // defined(MICROPY_HW_BDEV2_IOCTL)
+#endif // MICROPY_HW_ENABLE_STORAGE
 
 #if MICROPY_HW_SDCARD_MOUNT_AT_BOOT
 STATIC bool init_sdcard_fs(void) {
@@ -280,7 +333,7 @@ STATIC bool init_sdcard_fs(void) {
                 // subsequent partitions are numbered by their index in the partition table
                 if (part_num == 2) {
                     vfs->str = "/sd2";
-                } else if (part_num == 2) {
+                } else if (part_num == 3) {
                     vfs->str = "/sd3";
                 } else {
                     vfs->str = "/sd4";
@@ -628,16 +681,29 @@ soft_reset:
     can_init0();
     #endif
 
+    #ifndef SKIP_USBINIT
     #if MICROPY_HW_ENABLE_USB
     pyb_usb_init0();
+    #endif
     #endif
 
     // Initialise the local flash filesystem.
     // Create it if needed, mount in on /flash, and set it as current dir.
     bool mounted_flash = false;
+    bool mounted_flash2 = false;
     #if MICROPY_HW_ENABLE_STORAGE
+    #if defined(MICROPY_HW_BDEV2_IOCTL)
+    mounted_flash =
+        init_flash_fs_part(reset_mode, 1, MICROPY_HW_FLASH_FS_LABEL,
+                           qstr_str(MP_QSTR__slash_flash));
+    mounted_flash2 =
+        init_flash_fs_part(reset_mode, 2, MICROPY_HW_FLASH_FS2_LABEL,
+                           MICROPY_HW_FLASH_FS2_MOUNT_POINT);
+    // (void)mounted_flash2;
+    #else // defined(MICROPY_HW_BDEV2_IOCTL)
     mounted_flash = init_flash_fs(reset_mode);
-    #endif
+    #endif // defined(MICROPY_HW_BDEV2_IOCTL)
+    #endif // MICROPY_HW_ENABLE_STORAGE
 
     bool mounted_sdcard = false;
     #if MICROPY_HW_SDCARD_MOUNT_AT_BOOT
@@ -658,9 +724,16 @@ soft_reset:
     #endif
 
     // set sys.path based on mounted filesystems (/sd is first so it can override /flash)
+    // TODO: remove in production build
     if (mounted_sdcard) {
         mp_obj_list_append(mp_sys_path, MP_OBJ_NEW_QSTR(MP_QSTR__slash_sd));
         mp_obj_list_append(mp_sys_path, MP_OBJ_NEW_QSTR(MP_QSTR__slash_sd_slash_lib));
+    }
+    // qspi should also be in sys.path
+    // TODO: remove in production build
+    if (mounted_flash2) {
+        mp_obj_list_append(mp_sys_path, mp_obj_new_str_via_qstr("/qspi", 5));
+        mp_obj_list_append(mp_sys_path, mp_obj_new_str_via_qstr("/qspi/lib", 8));
     }
     if (mounted_flash) {
         mp_obj_list_append(mp_sys_path, MP_OBJ_NEW_QSTR(MP_QSTR__slash_flash));
@@ -698,6 +771,7 @@ soft_reset:
     // or whose initialisation can be safely deferred until after running
     // boot.py.
 
+    #ifndef SKIP_USBINIT
     #if MICROPY_HW_ENABLE_USB
     // init USB device to default setting if it was not already configured
     if (!(pyb_usb_flags & PYB_USB_FLAG_USB_MODE_CALLED)) {
@@ -710,6 +784,7 @@ soft_reset:
         #endif
         pyb_usb_dev_init(pyb_usb_dev_detect(), USBD_VID, pid, mode, 0, NULL, NULL);
     }
+    #endif
     #endif
 
     #if MICROPY_HW_HAS_MMA7660

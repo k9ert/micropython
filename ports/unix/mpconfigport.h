@@ -24,6 +24,23 @@
  * THE SOFTWARE.
  */
 
+// bitcoin
+#ifndef MODULE_SECP256K1_ENABLED
+#define MODULE_SECP256K1_ENABLED    (1)
+#endif
+#ifndef MODULE_HASHLIB_ENABLED
+#define MODULE_HASHLIB_ENABLED      (1)
+#endif
+#ifndef MODULE_DISPLAY_ENABLED
+#define MODULE_DISPLAY_ENABLED      (1)
+#endif
+#ifndef MODULE_QRCODE_ENABLED
+#define MODULE_QRCODE_ENABLED       (1)
+#endif
+
+#define MICROPY_PY_BUILTINS_HELP    (1)
+#define MICROPY_PY_BUILTINS_HELP_MODULES (1)
+
 // options to control how MicroPython is built
 
 #define MICROPY_ALLOC_PATH_MAX      (PATH_MAX)
@@ -49,9 +66,11 @@
 #define MICROPY_ENABLE_GC           (1)
 #define MICROPY_ENABLE_FINALISER    (1)
 #define MICROPY_STACK_CHECK         (1)
-#define MICROPY_MALLOC_USES_ALLOCATED_SIZE (1)
-#define MICROPY_MEM_STATS           (1)
+#define MICROPY_MALLOC_USES_ALLOCATED_SIZE (0)
+#define MICROPY_MEM_STATS           (0)
 #define MICROPY_DEBUG_PRINTERS      (1)
+#define MICROPY_ENABLE_SCHEDULER    (1)
+#define MICROPY_MODULE_BUILTIN_INIT (1)
 // Printing debug to stderr may give tests which
 // check stdout a chance to pass, etc.
 #define MICROPY_DEBUG_PRINTER       (&mp_stderr_print)
@@ -136,6 +155,7 @@
 #define MICROPY_PY_UHASHLIB_MD5     (1)
 #define MICROPY_PY_UHASHLIB_SHA1    (1)
 #define MICROPY_PY_UCRYPTOLIB       (1)
+#define MICROPY_PY_UCRYPTOLIB_CONSTS (1)
 #endif
 #define MICROPY_PY_UBINASCII        (1)
 #define MICROPY_PY_UBINASCII_CRC32  (1)
@@ -299,7 +319,11 @@ void mp_unix_mark_exec(void);
 
 #define MP_STATE_PORT MP_STATE_VM
 
+#include "lvgl/src/lv_misc/lv_gc.h"
+
 #define MICROPY_PORT_ROOT_POINTERS \
+    LV_ROOTS \
+    void *mp_lv_user_data; \
     const char *readline_hist[50]; \
     void *mmap_region_head; \
 
